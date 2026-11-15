@@ -1,0 +1,12 @@
+numpy
+matplotlib
+Pillow
+pandas
+gymnasium
+pygame-ce
+# --- 선택 (딥러닝 비교 실험 시) ---
+# torch
+# stable-baselines3
+# --- 선택 (Box2D 물리 시각화를 쓸 때만) ---
+# swig
+# gymnasium[box2d]

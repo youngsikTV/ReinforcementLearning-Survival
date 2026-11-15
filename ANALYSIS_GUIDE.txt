@@ -1,0 +1,351 @@
+================================================================================
+ Minecraft Survival RL - 실행 및 분석 가이드 (이 문서만 읽어도 실행/분석 가능)
+================================================================================
+
+[목차]
+  1. 프로젝트 개요
+  2. 환경 세팅
+  3. 폴더 구조
+  4. 환경(게임) 규칙
+  5. 알고리즘과 평가 방식
+  6. 실행 순서 (처음부터 끝까지)
+  7. 결과 파일 설명
+  8. 분석 방법 (무엇을 보고 어떻게 해석할까)
+  9. 보고서 / 발표 작성 틀
+ 10. GitHub 업로드 (.gitignore)
+ 11. 문제 해결 (자주 나는 오류)
+ 12. 알려진 한계
+
+--------------------------------------------------------------------------------
+1. 프로젝트 개요
+--------------------------------------------------------------------------------
+- 주제: 마인크래프트 세계관의 생존 게임. 에이전트가 하루(6개 시간대) 동안 행동을
+  골라 최대한 오래 생존하도록 강화학습으로 학습한다.
+- 사용 알고리즘: Q-learning, SARSA, Monte Carlo (수업에서 배운 Tabular RL을 직접 구현)
+- 분석 목표: 학습이 진행되면서 행동 선택 전략과 사망 원인이 어떻게 바뀌는지 관찰하고,
+  알고리즘과 보상 구조에 따른 차이를 비교한다.
+- Box2D는 사용하지 않는다. 의사결정 문제라 물리엔진이 필요 없고, Windows에서 설치가
+  자주 실패하기 때문이다. 시각화는 pygame-ce로 한다.
+
+--------------------------------------------------------------------------------
+2. 환경 세팅 (Windows / VS Code 기준)
+--------------------------------------------------------------------------------
+권장 Python: 3.12  (3.14에서는 pygame 설치가 실패할 수 있다. 팀원 모두 같은 버전 사용)
+
+  py -3.12 -m venv .venv
+  .venv\Scripts\activate
+  pip install -r requirements.txt
+
+확인:
+  - 프롬프트 맨 앞에 (.venv) 가 보여야 한다. 안 보이면 activate를 다시 실행.
+  - python -c "import numpy, pandas, gymnasium, pygame; print('OK')"  -> OK 가 나오면 성공
+  - VS Code: Ctrl+Shift+P -> Python: Select Interpreter -> .venv 선택
+
+주의:
+  - 시각화 라이브러리는 pygame-ce 이다 (pygame 이 아님). 둘을 같이 설치하면 충돌한다.
+    pygame 이 깔려 있으면: pip uninstall pygame -y  후 pip install pygame-ce
+  - pip install -r requirements.txt 는 한 패키지만 실패해도 전체가 중단된다.
+    실패한 패키지를 빼고 나머지를 따로 설치한다.
+  - 모든 명령은 프로젝트 루트 폴더(agents, scripts 폴더가 보이는 위치)에서 실행한다.
+  - Windows cmd 에서는 명령 뒤에 "# 주석"을 붙이면 인자로 들어가 오류가 난다. 붙이지 말 것.
+
+--------------------------------------------------------------------------------
+3. 폴더 구조
+--------------------------------------------------------------------------------
+  envs/survival_env.py       환경 (Gymnasium 호환, 이산 상태 31,104개)
+  agents/tabular.py          Q-learning / SARSA / Monte Carlo 구현
+  agents/baselines.py        random / 규칙 기반 정책, 평가 함수
+  scripts/train.py           1회 학습 (체크포인트, 탐험 없는 평가, 행동 로그 저장)
+  scripts/run_seeds.py       여러 시드 x 여러 알고리즘 일괄 학습 (병렬)
+  scripts/compare.py         알고리즘 비교 (단일 실행 / --multi 다중 시드)
+  scripts/compare_rewards.py 보상 구조 비교
+  scripts/analyze.py         학습 단계별 전략/사망 원인/행동 지표 그래프
+  scripts/record_all.py      시점별 시연 GIF 일괄 생성
+  scripts/visualize.py       pygame 시각화 (창 모드 / GIF 저장 모드)
+  scripts/play.py            텍스트 시연
+  results/                   실험 결과 (자동 생성)
+  docs/                      발표/README에 쓸 선택 그림, GIF 보관용
+  ANALYSIS_GUIDE.txt         이 문서
+
+(각 폴더에는 __init__.py 가 있어야 한다. agents, scripts 는 빈 파일이면 된다.
+ envs/__init__.py 에는 다음 한 줄이 있어야 한다.)
+  from .survival_env import MinecraftSurvivalEnv, ACTION_NAMES, PHASE_NAMES
+
+--------------------------------------------------------------------------------
+4. 환경(게임) 규칙
+--------------------------------------------------------------------------------
+시간: 1 step = 하루의 한 시간대. 하루 = 6 step
+      (0 아침, 1 점심, 2 오후, 3 저녁, 4 밤, 5 늦은밤)  -> 밤 = 4, 5
+상태: (배고픔 0~5, HP 0~5, 기력 0~5, 음식 0~3, 목재 0~2, 시간대 0~5, 쉼터 0/1)
+      -> 6*6*6*4*3*6*2 = 31,104 개
+시작: 배고픔 5, HP 5, 기력 5, 음식 1, 목재 0, 아침, 쉼터 없음
+행동 5개:
+  REST    기력 +2 (쉼터가 있고 밤이면 +3)
+  EAT     음식 1개 소비, 배고픔 +3 (음식이 없으면 무의미한 행동)
+  HUNT    기력 -1, 음식 +1 (낮 70%, 밤 30% 확률)
+  WOOD    기력 -1, 목재 +1 (80% 확률)
+  SHELTER 목재 1개 소비, 쉼터 건설, 기력 -1 (목재가 없거나 이미 쉼터가 있으면 무의미)
+매 step 규칙:
+  - 50% 확률로 배고픔 -1
+  - 밤(4,5)에 몬스터 습격: 쉼터 없으면 50%, 있으면 5% 확률로 HP -2
+  - 배고픔 0이면 HP -1, 기력 0이면 HP -1
+  - 배고픔 >= 4 이고 기력 >= 2 이면 30% 확률로 HP +1
+  - 쉼터는 새 하루가 시작되면 사라진다 (매일 다시 지어야 함)
+종료: HP 0 이하(사망) 또는 목표 일수(기본 30일) 도달
+보상(기본값): 매 step +1, 하루를 버틸 때마다 +5, 사망 -20, 무의미한 행동 -0.5
+  보상 옵션: step_growth (오래 살수록 step 보상 증가), day_growth (하루 보너스 증가)
+종료 원인(death_cause): 마지막 step 에서 가장 큰 피해를 준 원인
+  (monster / hunger / exhaustion). 목표 일수 도달은 "survived".
+  -> 여러 원인이 겹친 경우 마지막 step 기준이라는 점에 유의.
+
+--------------------------------------------------------------------------------
+5. 알고리즘과 평가 방식
+--------------------------------------------------------------------------------
+학습 (agents/tabular.py, scripts/train.py)
+  - 공통: epsilon-greedy. epsilon 은 1.0 -> 0.05 로 선형 감소 (전체 에피소드의 60% 지점까지,
+    이후 0.05 고정). 기본 alpha=0.1, gamma=0.99
+  - Q-learning : off-policy TD. 목표값에 max Q(s') 사용
+  - SARSA      : on-policy TD. 목표값에 실제로 고른 다음 행동의 Q(s', a') 사용
+  - Monte Carlo: first-visit, 에피소드가 끝난 뒤 리턴으로 갱신 (방문 횟수 평균)
+
+평가 (탐험 없는 평가, greedy evaluation)
+  - 학습 중 로그의 생존일은 epsilon 탐험이 섞여 있어 정책 자체의 성능이 아니다.
+  - 그래서 eval_every(기본 1000) 에피소드마다 탐험 없이 argmax 정책으로
+    고정 시드 100판을 돌려 평균 생존일, 표준편차, 사망률을 기록한다 (<algo>_eval.csv).
+  - 평가 시드는 학습 시드와 분리되어 있고(10,000,000+i), 모든 알고리즘/시점/보상 설정에서 같다.
+  - 방문한 적 없는 상태는 Q값이 모두 0 이라 무작위로 행동한다 (특히 학습 초반 / MC).
+  - 서로 다른 보상 설정을 비교할 때 공통 지표는 "총 보상"이 아니라 "생존 일수"다.
+
+기준선 (agents/baselines.py)
+  - random   : 5개 행동을 무작위로 선택 (실측 평균 약 1.9일)
+  - heuristic: 사람이 짠 규칙 (배고프면 먹기, 기력 낮으면 쉬기, 해지기 전 쉼터 짓기,
+               음식이 적으면 사냥, 그 외 휴식) (실측 평균 약 8.9일)
+  - 학습한 에이전트가 heuristic 을 넘는지가 "의미 있게 학습했는가"의 기준이 된다.
+  - 위 수치는 이 문서를 만들 때 직접 돌려 본 값이다. 환경 파라미터를 바꾸면 달라진다.
+
+체크포인트
+  - 학습 진행률 0, 10, 30, 60, 100% 시점의 Q-table 을 results/<tag>/ckpt/ 에 저장
+    (0% = 학습 전, 100% = 최종). 시점별 행동 비교 영상에 사용한다.
+
+--------------------------------------------------------------------------------
+6. 실행 순서 (처음부터 끝까지)
+--------------------------------------------------------------------------------
+[STEP 0] 기준선 확인
+  python -m agents.baselines
+
+[STEP 1] 동작 확인용 짧은 실행 (먼저 꼭 해볼 것. 몇 분 이내)
+  python -m scripts.run_seeds --tag smoke --algos qlearning sarsa mc --seeds 0 1 --episodes 20000
+  python -m scripts.compare --tag smoke --multi
+
+[STEP 2] 본 실험 1: 알고리즘 비교 (시드 반복)
+  python -m scripts.run_seeds --tag base --algos qlearning sarsa mc --seeds 0 1 2 3 4 --episodes 100000 --workers 3
+  python -m scripts.compare --tag base --multi
+  - 3개 알고리즘 x 5개 시드 = 15번 학습이라 시간이 오래 걸린다. --workers 는 PC 코어 수에 맞춘다.
+  - 결과 폴더: results/base_s0 ... base_s4 (시드별), results/base_summary (요약)
+
+[STEP 3] 본 실험 2: 보상 구조 비교 (독창성 포인트)
+  python -m scripts.run_seeds --tag rw_base  --algos qlearning --seeds 0 1 2
+  python -m scripts.run_seeds --tag rw_step  --algos qlearning --seeds 0 1 2 --day_bonus 0
+  python -m scripts.run_seeds --tag rw_bonus --algos qlearning --seeds 0 1 2 --day_bonus 20
+  python -m scripts.run_seeds --tag rw_grow  --algos qlearning --seeds 0 1 2 --step_growth 0.1
+  python -m scripts.compare_rewards --tags rw_base rw_step rw_bonus rw_grow --algo qlearning --name reward_study
+  보상 옵션: --step_reward --day_bonus --death_penalty --invalid_penalty --step_growth --day_growth
+
+[STEP 4] 학습 단계별 전략 분석 (시드 하나를 골라서)
+  python -m scripts.analyze --tag base_s0 --algo qlearning
+  python -m scripts.analyze --tag base_s0 --algo sarsa
+  python -m scripts.analyze --tag base_s0 --algo mc
+  - --stages N 으로 학습을 몇 구간으로 나눠 볼지 정한다 (기본 10)
+
+[STEP 5] 시점별 시연 영상(GIF) 생성
+  python -m scripts.record_all --tag base_s0 --algos qlearning sarsa mc
+  - random.gif, heuristic.gif, <algo>_p0/p10/p30/p60/p100.gif 가 results/base_s0/videos/ 에 저장된다.
+  - 같은 --seed(기본 123)로 만들어 시점별 행동을 나란히 비교할 수 있다.
+  - 환경에 확률 요소가 있어 같은 시드라도 행동이 다르면 전개는 달라진다.
+
+[선택] 창으로 직접 보기 (pygame)
+  python -m scripts.visualize --policy q --tag base_s0 --algo qlearning              # 최종
+  python -m scripts.visualize --policy q --tag base_s0 --algo qlearning --ckpt 30    # 학습 30% 시점
+  python -m scripts.visualize --policy heuristic
+  python -m scripts.visualize --policy random
+  조작: Space 일시정지 / R 새 에피소드 / 위,아래 화살표 속도 / ESC 종료
+  - 한 판이 끝나도 창은 자동으로 닫히지 않는다 (R 로 다시 시작).
+  - --policy q 는 학습 결과(results 의 Q-table)를 불러와 재생할 뿐 학습하지 않는다.
+
+[선택] 텍스트 시연
+  python -m scripts.play --tag base_s0 --algo qlearning
+
+[선택] 단일 실행(시드 1개)으로 빠르게 보기
+  python -m scripts.train --algo qlearning --tag base --episodes 20000
+  python -m scripts.compare --tag base
+
+--------------------------------------------------------------------------------
+7. 결과 파일 설명
+--------------------------------------------------------------------------------
+results/<tag>/
+  <algo>_log.csv       에피소드별 로그: days, total_reward, eps, died, death_cause, steps,
+                       eat_actions, invalid_actions, nights, shelter_nights, hunger_at_eat
+  <algo>_eval.csv      탐험 없는 평가: episode, eval_days_mean, eval_days_std, eval_death_rate
+  <algo>_Q.npy         최종 Q-table
+  <algo>_actions.npy   에피소드별 (시간대 x 행동) 선택 횟수
+  <algo>_args.json     학습에 쓴 설정(재현용)
+  ckpt/<algo>_Q_p<진행률>.npy   체크포인트
+  figs/<algo>_curve.png      학습 곡선 + 기준선
+  figs/<algo>_strategy.png   초기/중기/후기 시간대 x 행동 분포 히트맵
+  figs/<algo>_death.png      학습 구간별 종료 원인 비율
+  figs/<algo>_behavior.png   학습 구간별 행동 지표 (4개 패널)
+  <algo>_behavior.csv        행동 지표 표
+  videos/*.gif               시점별 시연 영상
+results/<tag>_summary/
+  compare_multi_curve.png    알고리즘별 평가 곡선 (시드 평균 +- 표준편차)
+  compare_multi_table.csv    최종 평가 생존일, 사망률, 기준선을 넘은 시드 수 등
+results/<name>/ (compare_rewards 의 --name)
+  reward_compare_curve.png, reward_compare_table.csv
+
+행동 지표 정의
+  shelter_ratio  : 밤이 시작될 때 쉼터가 있는 비율 (밤 전에 죽은 에피소드는 제외)
+  eat_per_day    : 하루(6 step)당 식사 횟수
+  hunger_at_eat  : 식사할 때의 배고픔 수치 (낮을수록 배고플 때까지 기다렸다 먹음)
+  invalid_rate   : 전체 step 중 무의미한 행동 비율
+
+--------------------------------------------------------------------------------
+8. 분석 방법 (무엇을 보고 어떻게 해석할까)
+--------------------------------------------------------------------------------
+[8-1] 질문별 분석 매핑
+  Q1. 학습이 되었는가?
+      -> compare_multi_curve: 평가 곡선이 random 을 넘고, heuristic 을 넘는가?
+         표의 seeds_beating_heuristic (예: 4/5), median_ep_to_beat 확인
+  Q2. 어느 알고리즘이 더 좋은가 / 빠른가 / 안정적인가?
+      -> final_eval_days (평균 +- 표준편차), 곡선의 띠 폭(시드 간 편차), 수렴 에피소드
+  Q3. 학습하면서 전략이 어떻게 바뀌는가?
+      -> *_strategy.png (시간대별 행동), *_behavior.png (쉼터 준비율, 식사 패턴),
+         videos/*.gif (학습 전 -> 중간 -> 최종 비교)
+  Q4. 무엇 때문에 죽고, 그 이유가 학습으로 바뀌는가?
+      -> *_death.png (굶주림 / 기력 고갈 / 몬스터 / 생존 비율의 변화)
+  Q5. 보상 구조가 행동에 영향을 주는가?
+      -> compare_rewards 표/그래프의 생존일 + 학습 후반 종료 원인 비율(late_*)
+         + analyze 로 각 보상 설정의 행동 지표 확인
+
+[8-2] 알고리즘 비교 시 가설 예시 (맞고 틀림 모두 기록할 것)
+  - SARSA 는 on-policy 라 탐험 중의 위험(밤 습격)을 학습에 반영해 더 보수적일 수 있다.
+  - MC 는 에피소드가 끝나야 갱신되므로 초기 학습이 느리거나 분산이 클 수 있다.
+  - Q-learning 은 off-policy 라 최적 정책에 더 빨리 다가갈 수 있지만 탐험 중 위험에 둔감할 수 있다.
+  - 상태가 31,104개라 Tabular 학습은 에피소드가 부족하면 수렴이 느리다.
+
+[8-3] 전략 변화 해석 예시
+  - 쉼터 준비율(shelter_ratio)이 오르면: "밤 습격 확률 0.5 vs 0.05 라는 환경 구조 때문에
+    쉼터 건설의 가치(Q값)가 올라가 해지기 전 쉼터를 짓는 전략을 학습했다"로 연결해 설명.
+  - 식사 시점 배고픔(hunger_at_eat)이 변하면: 언제 먹는 것이 유리한지 학습했다는 근거.
+  - 종료 원인이 굶주림 -> 몬스터로 바뀌면: 기본 자원 관리를 익힌 뒤 밤 대비가 병목이 되었다는 해석.
+
+[8-4] 해석 시 지킬 것
+  - 평균 +- 표준편차를 같이 본다. 차이가 표준편차보다 작으면 "차이가 있다"고 단정하지 않는다.
+    시드 5개는 통계적 결론에는 적으므로 "경향"으로 표현한다.
+  - 서로 다른 설정의 비교는 총 보상이 아니라 탐험 없는 평가의 생존 일수로 한다.
+  - 보상을 바꾸면 에이전트의 목표가 달라진다. 생존일만 보지 말고 어떤 행동 패턴이
+    그 결과를 만들었는지(행동 지표)까지 설명한다.
+  - 종료 원인은 "마지막 step 의 가장 큰 피해 원인"이라고 정의를 밝힌다.
+  - 환경 파라미터는 임의로 정한 값이다. 결과는 "이 환경에서의" 결과라고 한계에 적는다.
+  - 가설이 틀렸다면 그대로 적는다. 그것이 "과정에서 배운 내용"이다.
+
+[8-5] 추가로 해볼 수 있는 실험
+  - 하이퍼파라미터: --alpha, --gamma 를 바꿔 run_seeds 를 다른 tag 로 반복
+  - 에피소드 수에 따른 수렴 비교 (Tabular 의 한계 확인)
+  - 상태 설계 단순화(상태 수 줄이기) 또는 DQN 비교 (라이브러리 사용 시 이론/소스 이해 필수)
+
+--------------------------------------------------------------------------------
+9. 보고서 / 발표 작성 틀
+--------------------------------------------------------------------------------
+평가 기준: 완성도 50%, 독창성 30%, 전달력 20%.
+발표 10분 + 질의응답 5분, GitHub 등 문서화 포함. 팀 평가와 개인 평가가 분리되며
+발표 중 질문/토론 참여도 개인 평가에 반영된다.
+
+실험마다: 가설 -> 설정 -> 결과(그림/표) -> 해석 -> 한계 순서로 작성한다.
+
+발표 구성 예시 (10분)
+  1) 문제와 환경 (1.5분)   상태/행동/보상/종료 조건
+  2) 방법 (1.5분)          Q-learning, SARSA, MC 차이, 평가 방식(탐험 없는 평가, 시드 반복)
+  3) 결과 1 (2분)          알고리즘 비교 그래프와 표
+  4) 결과 2 (2분)          보상 구조 비교
+  5) 전략 변화 (2분)       학습 전/중간/최종 GIF + 종료 원인 + 행동 지표
+  6) 한계와 배운 점 (1분)
+
+예상 질문 준비
+  - 상태가 3만 개인데 왜 Tabular 인가 / 왜 Box2D 를 안 썼는가
+  - epsilon 설정 근거 / MC 가 느리거나 불안정한 이유
+  - 왜 총 보상이 아니라 생존일로 비교했는가 / 시드를 왜 반복했는가
+
+팀 역할(개인 평가 대비): 각자 맡은 부분(환경/보상, 알고리즘/실험, 분석/발표/문서)을
+README 의 역할 표와 GitHub 커밋으로 남긴다. 자신이 맡은 코드는 직접 설명할 수 있어야 한다.
+
+--------------------------------------------------------------------------------
+10. GitHub 업로드 (.gitignore)
+--------------------------------------------------------------------------------
+.gitignore 내용(이미 프로젝트에 포함):
+  .venv/
+  venv/
+  __pycache__/
+  *.pyc
+  .ipynb_checkpoints/
+  .vscode/
+  .idea/
+  .DS_Store
+  Thumbs.db
+  results/**/*.npy
+  results/**/*_log.csv
+  results/**/videos/
+  frames/
+
+주의: .gitignore 에서는 줄 끝에 "# 설명"을 붙이면 주석이 아니라 패턴의 일부가 된다.
+      설명은 반드시 별도 줄에 쓴다.
+
+제외 이유: 가상환경/캐시는 재생성 가능, .npy(Q-table, 체크포인트)와 에피소드 로그와 GIF 는
+용량이 크고 train.py 로 재현 가능.
+올리는 것: 코드, README.md, requirements.txt, ANALYSIS_GUIDE.txt,
+          results/**/figs/*.png, *_eval.csv, compare_*.csv, reward_compare_*.csv,
+          *_behavior.csv, *_args.json
+발표/README 에 쓸 GIF·그림은 docs/ 폴더로 복사해서 올리고 README 에서 상대 경로로 연결한다.
+  예) ![비교](docs/compare_multi_curve.png)
+업로드 전 git status 로 큰 파일이 없는지 확인한다. 이미 커밋한 파일은 .gitignore 를
+나중에 추가해도 빠지지 않으므로 git rm -r --cached <경로> 로 추적에서 뺀다.
+(.venv 는 OneDrive 같은 동기화 폴더 밖에 두는 편이 낫다.)
+
+--------------------------------------------------------------------------------
+11. 문제 해결 (자주 나는 오류)
+--------------------------------------------------------------------------------
+- pygame 설치 중 "Getting requirements to build wheel ... error" (distutils.msvccompiler)
+    원인: Python 3.14 용 pygame 설치 파일이 없어 소스 빌드를 시도함.
+    해결: pip install pygame-ce  /  그래도 안 되면 Python 3.12 로 가상환경 재생성
+          (deactivate -> rmdir /s /q .venv -> py -3.12 -m venv .venv -> activate -> pip install -r requirements.txt)
+- ModuleNotFoundError: No module named 'numpy' (또는 pandas, gymnasium)
+    원인: 가상환경이 활성화되지 않았거나 설치가 중간에 중단됨.
+    해결: 프롬프트에 (.venv) 확인 후 pip install numpy matplotlib pandas gymnasium Pillow pygame-ce
+- ModuleNotFoundError: No module named 'scripts'
+    원인: 프로젝트 루트가 아닌 곳에서 실행했거나 폴더 구조가 다름.
+    해결: scripts, agents, envs 폴더가 보이는 위치에서 python -m scripts.xxx 로 실행.
+          없는 __init__.py 는 빈 파일로 만든다 (envs/__init__.py 는 3번 항목 참고).
+- 명령 실행 시 이상한 인자 오류: 명령 뒤에 "# 주석"을 붙이지 않았는지 확인 (Windows cmd).
+- FileNotFoundError: ..._Q.npy 또는 ckpt 파일이 없다는 오류
+    해결: 같은 --tag / --algo 로 먼저 학습. --ckpt 값은 학습 때 저장한 진행률(0,10,30,60,100)과 같아야 함.
+          다중 시드 결과는 tag 가 base_s0 처럼 시드가 붙는다.
+- compare --multi 에서 results/<tag>_s* 가 없다는 오류: run_seeds 로 먼저 학습.
+- analyze 에서 "사망 원인/행동 지표 컬럼이 없습니다": 최신 train.py 로 다시 학습한 결과에서만 생성됨.
+- 시각화 창이 안 보임: 작업 표시줄/다른 창 뒤를 확인. 오류 메시지가 없는데도 안 뜨면
+    pip list 에 pygame 과 pygame-ce 가 둘 다 있는지 확인하고 pygame 을 제거.
+- 한글 글꼴이 깨짐: analyze.py / compare*.py 의 font.family (Windows: Malgun Gothic,
+    Mac: AppleGothic), visualize.py 의 글꼴 목록에 설치된 한글 폰트를 추가.
+- 학습이 너무 오래 걸림: --episodes 를 줄이거나 --seeds 수를 줄여 먼저 확인.
+
+--------------------------------------------------------------------------------
+12. 알려진 한계
+--------------------------------------------------------------------------------
+- 이 코드는 개발 중 짧은 실행(수천 에피소드)으로만 검증되었다. 본 실험(10만 에피소드,
+  다중 시드)의 결과는 직접 돌려 확인해야 하며, 어떤 결과가 나올지는 보장되지 않는다.
+- pygame 시각화(visualize.py)와 GIF 저장(--record, record_all.py)은 문법 검사만 했고
+  실제 pygame 창/렌더링은 개발 환경 제약으로 직접 실행해 보지 못했다. 오류가 나면
+  메시지를 확인해 수정이 필요할 수 있다.
+- 상태 수(31,104개)에 비해 에피소드가 적으면 Tabular 학습이 느리다.
+- 환경 규칙/파라미터는 임의로 정한 값이라 튜닝에 따라 결과가 달라질 수 있다.
+- 종료 원인은 마지막 step 기준이라 복합 원인을 구분하지 못한다.
+- 시드 수가 적으면 통계적 결론을 내리기 어렵다.
+================================================================================

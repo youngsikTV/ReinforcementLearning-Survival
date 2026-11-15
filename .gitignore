@@ -1,0 +1,20 @@
+# 가상환경 / 캐시
+.venv/
+venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# 에디터 / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 실험 결과는 저장소에 올리지 않는다 (받은 사람이 처음부터 직접 실행해서 생성)
+# results/ 폴더 자체는 .gitkeep 으로 남겨 둔다
+results/*
+!results/.gitkeep
+
+# --save_frames 로 저장된 PNG
+frames/
