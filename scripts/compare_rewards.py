@@ -19,7 +19,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scripts.compare import baselines, first_reach
 
-plt.rcParams["font.family"] = "Malgun Gothic"   # Mac: AppleGothic
+plt.rcParams["font.family"] = ["Malgun Gothic", "AppleGothic", "Noto Sans CJK KR", "Noto Sans CJK JP", "DejaVu Sans"]
 plt.rcParams["axes.unicode_minus"] = False
 CAUSE_KEYS = ["hunger", "exhaustion", "monster", "survived"]
 
@@ -38,10 +38,15 @@ def main(a):
         plt.plot(g.index, g["mean"], label=f"{tag} (n={len(evs)})")
         plt.fill_between(g.index, g["mean"] - g["std"], g["mean"] + g["std"], alpha=0.2)
         finals = np.array([e.eval_days_mean.iloc[-1] for e in evs])
+        last5 = np.array([e.eval_days_mean.iloc[-5:].mean() for e in evs])
+        rate30 = np.array([1.0 - e.eval_death_rate.iloc[-1] for e in evs])
         reach = [r for r in (first_reach(e.episode, e.eval_days_mean, heu) for e in evs) if r is not None]
         row = dict(tag=tag, n_seeds=len(evs), final_eval_days=f"{finals.mean():.2f} ± {finals.std():.2f}",
-                   seeds_beating_heuristic=f"{len(reach)}/{len(evs)}",
-                   median_ep_to_beat=int(np.median(reach)) if reach else None)
+                   last5_eval_days=f"{last5.mean():.2f} ± {last5.std():.2f}",
+                   final_30day_rate=round(float(rate30.mean()), 3),
+                   final_at_or_above_heuristic=f"{int((finals >= heu).sum())}/{len(evs)}",
+                   ever_reached_heuristic=f"{len(reach)}/{len(evs)}",
+                   median_ep_first_reach=int(np.median(reach)) if reach else None)
         # 학습 후반 10% 구간의 종료 원인 비율 (시드 평균)
         causes = []
         for d in dirs:

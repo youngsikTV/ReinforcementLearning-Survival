@@ -62,14 +62,16 @@ python -m scripts.compare --tag base --multi
 
 4-2. 보상 구조 비교 실험 (공통 지표는 총 보상이 아니라 **탐험 없는 평가의 생존 일수**)
 ```
-python -m scripts.run_seeds --tag rw_base  --algos qlearning --seeds 0 1 2
-python -m scripts.run_seeds --tag rw_step  --algos qlearning --seeds 0 1 2 --day_bonus 0
-python -m scripts.run_seeds --tag rw_bonus --algos qlearning --seeds 0 1 2 --day_bonus 20
-python -m scripts.run_seeds --tag rw_grow  --algos qlearning --seeds 0 1 2 --step_growth 0.1
-python -m scripts.compare_rewards --tags rw_base rw_step rw_bonus rw_grow --algo qlearning --name reward_study
+python -m scripts.run_reward_study --only base scale2 step_only --seeds 0 1 --episodes 20000
+python -m scripts.run_reward_study
+python -m scripts.run_reward_study --only grow --name grow_only
 ```
-보상 옵션: `--step_reward`, `--day_bonus`, `--death_penalty`, `--invalid_penalty`, `--step_growth`(오래 살수록 step 보상 증가), `--day_growth`(하루 보너스 증가).
-결과: `results/reward_study/reward_compare_curve.png`, `reward_compare_table.csv` (학습 후반 10%의 종료 원인 비율 포함)
+- 첫 줄은 동작 확인용 짧은 실행, 둘째 줄은 본 실험(프리셋 8개 x 시드 5개 x 100,000 에피소드)이다.
+- 프리셋: `base`, `scale2`(모든 보상 2배, 대조군), `step_only`, `day_only`, `bonus20`, `death0`, `death100`, `invalid0`, `grow`(선택, `--include_growth` 또는 `--only grow`).
+- 개별 조건은 `run_seeds`로도 실행할 수 있다. 예: `python -m scripts.run_seeds --tag rw_bonus20 --algos qlearning --seeds 0 1 2 3 4 --day_bonus 20`
+- 보상 옵션: `--step_reward`, `--day_bonus`, `--death_penalty`, `--invalid_penalty`, `--step_growth`(오래 살수록 step 보상 증가), `--day_growth`(하루 보너스 증가).
+- 결과: `results/reward_study/reward_compare_curve.png`, `reward_compare_table.csv` (최종 평균, last5, 30일 도달률, 기준선 도달 시드 수, 학습 후반 10%의 종료 원인 비율 포함)
+- 조건별 행동 분석은 시드 폴더 태그 `rw_<프리셋>_s0`로 실행한다. 예: `python -m scripts.analyze --tag rw_day_only_s0 --algo qlearning`
 
 4-3. 학습 단계별 분석 (최신 `train.py`로 학습한 결과에서만 동작)
 ```
@@ -108,6 +110,7 @@ Survival/
   scripts/compare.py        알고리즘 비교 그래프·표 (단일 실행 / --multi 다중 시드)
   scripts/run_seeds.py      시드 x 알고리즘 일괄 학습 (병렬, 보상 옵션 전달)
   scripts/compare_rewards.py 보상 구조 비교 (생존일 기준)
+  scripts/run_reward_study.py 보상 구조 프리셋 일괄 실행 (학습 + 비교)
   scripts/play.py           텍스트 시연
   scripts/visualize.py      pygame 시각화 (체크포인트 선택, GIF 저장)
   scripts/record_all.py     시점별 시연 GIF 일괄 생성
@@ -128,11 +131,13 @@ Survival/
 |---|---|---|
 | 기준선 | 평균 생존일은 무작위 정책 약 1.9일, 규칙 기반 정책 약 8.9일 | 완료 |
 | 알고리즘 비교 | 알고리즘별 5개 시드에서 각각 100,000 에피소드 학습. 최종 평균 생존일은 Monte Carlo 9.94 ± 0.35일, Q-learning 9.51 ± 1.02일, SARSA 7.05 ± 0.50일 | 완료 |
-| 보상 구조 비교 | 스텝 보상만 적용, 하루 보너스 확대, 증가형 보상 비교 | 예정 |
+| 보상 구조 비교 | Q-learning, 시드 5개, 100,000 에피소드로 보상 프리셋 9개 비교. 대조군 scale2는 base와 완전히 일치. 최종 평균 생존일은 base 9.51 ± 1.02일, step_only 11.06 ± 1.13일, day_only 11.76 ± 0.48일, death0 7.84 ± 0.22일 등 | 완료 |
 | 하이퍼파라미터 실험 | Q-learning 학습률 0.05, 0.10, 0.20 비교. 시험한 값 중 0.20의 최종 평균 생존일이 12.84일로 가장 높았음 | 학습률 비교 완료 |
 | 행동 변화 분석 | Q-learning 시드 0의 학습 로그 분석. 첫 10% 대비 마지막 10%의 무효 행동 비율이 20.9%에서 6.1%로 감소 | Q-learning 시드 0 분석 완료 |
 
 [상세 실험 결과와 재현 방법](docs/experiment-results.md)
+
+[보상 구조 실험 결과와 재현 방법](docs/reward-results.md)
 
 ## 7. 한계 및 배운 점
 - 상태 수가 많아 Q-learning 수렴이 느리다 (에피소드 수와 평균 생존일의 관계 정리 필요).
