@@ -142,7 +142,6 @@ Survival/
 ## 7. 한계 및 배운 점
 - 상태 수가 많아 Q-learning 수렴이 느리다 (에피소드 수와 평균 생존일의 관계 정리 필요).
 - 환경 파라미터는 임의로 정한 값이라 튜닝에 따라 결과가 달라질 수 있다.
-- (실험하며 배운 점을 계속 기록)
 
 ## 8. 참고
 - 수업 자료: Lecture 2~5 (MDP, Value Iteration, Monte Carlo, SARSA, Q-learning)
